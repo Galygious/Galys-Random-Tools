@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TOTP Debugger</title>
+<style>
+body {
+  font-family: monospace;
+  padding: 16px;
+}
+input, textarea, button {
+  width: 100%;
+  margin-bottom: 8px;
+  font-family: monospace;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 6px;
+  text-align: center;
+}
+.match {
+  background: #c8ffc8;
+}
+</style>
+</head>
+<body>
+
+<h2>TOTP Debugger (Offline)</h2>
+
+<label>Base32 Secret</label>
+<input id="secret" placeholder="JBSWY3DPEHPK3PXP">
+
+<label>Expected Code (optional)</label>
+<input id="expected" placeholder="123456">
+
+<button onclick="run()">Generate</button>
+
+<table>
+<thead>
+<tr>
+<th>Algo</th>
+<th>Digits</th>
+<th>Period</th>
+<th>Time Offset</th>
+<th>Code</th>
+</tr>
+</thead>
+<tbody id="out"></tbody>
+</table>
+
+<script>
+const base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32ToBytes(base32) {
+  let bits = "";
+  base32 = base32.replace(/=+$/, "").toUpperCase();
+  for (const c of base32) {
+    const val = base32chars.indexOf(c);
+    if (val < 0) continue;
+    bits += val.toString(2).padStart(5, "0");
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return new Uint8Array(bytes);
+}
+
+async function hmac(algo, key, msg) {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: algo },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, msg);
+  return new Uint8Array(sig);
+}
+
+function intToBytes(num) {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setBigUint64(0, BigInt(num));
+  return new Uint8Array(buf);
+}
+
+async function totp(secretBytes, algo, digits, period, offset) {
+  const time = Math.floor(Date.now() / 1000);
+  const counter = Math.floor((time + offset) / period);
+  const counterBytes = intToBytes(counter);
+  const hash = await hmac(algo, secretBytes, counterBytes);
+  const o = hash[hash.length - 1] & 0xf;
+  const code =
+    ((hash[o] & 0x7f) << 24) |
+    ((hash[o + 1] & 0xff) << 16) |
+    ((hash[o + 2] & 0xff) << 8) |
+    (hash[o + 3] & 0xff);
+  return (code % 10 ** digits).toString().padStart(digits, "0");
+}
+
+async function run() {
+  const secret = document.getElementById("secret").value.trim();
+  const expected = document.getElementById("expected").value.trim();
+  const out = document.getElementById("out");
+  out.innerHTML = "";
+
+  const secretBytes = base32ToBytes(secret);
+  const algos = ["SHA-1", "SHA-256", "SHA-512"];
+  const digitsList = [6, 8];
+  const periods = [30, 60];
+  const offsets = [-30, 0, 30];
+
+  for (const algo of algos) {
+    for (const digits of digitsList) {
+      for (const period of periods) {
+        for (const offset of offsets) {
+          const code = await totp(secretBytes, algo, digits, period, offset);
+          const tr = document.createElement("tr");
+          if (expected && code === expected) tr.className = "match";
+          tr.innerHTML = `
+            <td>${algo}</td>
+            <td>${digits}</td>
+            <td>${period}</td>
+            <td>${offset}</td>
+            <td>${code}</td>
+          `;
+          out.appendChild(tr);
+        }
+      }
+    }
+  }
+}
+</script>
+
+</body>
+</html>
